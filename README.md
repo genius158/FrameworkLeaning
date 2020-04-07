@@ -13,7 +13,7 @@ ulimit -S -n 1024
 5. $ make -j4（4来自3的数量）
 6. emulator 启动模拟器
 ```
-//如果关了控制台，想再次启动模拟器执行
+//如果关了终端，想再次启动模拟器执行
 source build/envsetup.sh
 lunch 5(开始选的编译选项)
 emulator
