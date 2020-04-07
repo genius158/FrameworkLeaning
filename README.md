@@ -11,6 +11,7 @@ ulimit -S -n 1024
 
 4. $ sysctl -n machdep.cpu.core_count(查看内核数)
 5. $ make -j4（4来自3的数量）
+6. emulator 启动模拟器
 
 ### ps 最终编译成功的流程
 1. repo sync 可以执行多次保证源码的完整性
