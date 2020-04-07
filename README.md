@@ -18,7 +18,7 @@ ulimit -S -n 1024
 3. lunch
 4. make clobber
 5. make SELINUX_IGNORE_NEVERALLOWS=true 代替make -j4 用后者试了5、6次都是编译60%多（2、3个小时候后）报错,几乎放弃
-- 常见的一些make编译命令如下所示：
+- ——常见的一些make编译命令如下所示：
 - make 编译工程与模块    //编译整个工程，整体编译时间较长
 - make module              //对单个模块进行编译，对其所依赖的模块也进行编译，整体编译时间较长
 - mm                              //先进入子目录，对其目录对应的模块进行编译，编译时间短
