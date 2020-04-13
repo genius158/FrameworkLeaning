@@ -41,5 +41,18 @@ emulator
 2. make idegen
 3. development/tools/idegen/idegen.sh
 - androidStudio打开aosp根目录下生成的android.ipr
+
+## gdb
+- source build/envsetup.sh
+- lunch 5
+1. aosp
+- gdbclient.py -p 1234
+- set solib-absolute-prefix /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
+- set solib-search-path /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
+2. normal
+- .//prebuilts/gdb/darwin-x86/bin/gdb (根据编译版本而定)
+- set solib-absolute-prefix /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
+- set solib-search-path /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
+
 ## logic
 ![app_main](app_main.png) 
