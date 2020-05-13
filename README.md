@@ -54,7 +54,7 @@ emulator
 - set solib-absolute-prefix /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
 - set solib-search-path /Volumes/untitled/WORKING_DIRECTORY/out/target/product/generic_x86/symbols
 
-## -binde篇（一次注册调用说起）
+## -binder篇（一次注册调用说起）
 ### 1.非当前进程启动service
 Context.bindService(service,conn,flags)->ContextImpl.bindServiceCommon(service,conn,flags,handler,user)
 ```
