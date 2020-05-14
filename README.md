@@ -673,7 +673,7 @@ status_t IPCThreadState::writeTransactionData(int32_t cmd, uint32_t binderFlags,
     binder_transaction_data tr;
     tr.target.ptr = 0; //binder_node的指针
     tr.target.handle = handle;//用它可以找到对应的binder_ref，通过它找到目标的binder_node，最后找到目标进程binder_proc
-    tr.code = code;//Client端与Server端双方约定的命令码
+    tr.code = code;//Client端与Server端双方约定的命令码,这里是PUBLISH_SERVICE_TRANSACTION
     tr.flags = binderFlags;
     tr.cookie = 0;//BBinder指针
     tr.sender_pid = 0;
@@ -808,23 +808,6 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
         else
             err = -errno;
     } while (err == -EINTR);
-
-    if (err >= NO_ERROR) {
-        if (bwr.write_consumed > 0) {
-            if (bwr.write_consumed < mOut.dataSize())
-                mOut.remove(0, bwr.write_consumed);
-             else {
-                 mOut.setDataSize(0);
-                 processPostWriteDerefs();
-             }
-         }
-         if (bwr.read_consumed > 0) {
-             mIn.setDataSize(bwr.read_consumed);
-             mIn.setDataPosition(0);
-         }
-     }
- 
-     return err;
  }
  
 ```
@@ -1156,7 +1139,9 @@ static void binder_transaction(struct binder_proc *proc,
     t->buffer->target_node = target_node;
 
     if (target_node)
-        binder_inc_node(target_node, 1, 0, NULL); //引用计数加1
+        //引用计数加1
+        binder_inc_node(target_node, 1, 0, NULL); 
+
     offp = (binder_size_t *)(t->buffer->data + ALIGN(tr->data_size, sizeof(void *)));
 
     //分别拷贝用户空间的binder_transaction_data中ptr.buffer和ptr.offsets到内核
@@ -1172,17 +1157,22 @@ static void binder_transaction(struct binder_proc *proc,
 		fp = (struct flat_binder_object *)(t->buffer->data + *offp);
 		off_min = *offp + sizeof(struct flat_binder_object);
 		switch (fp->type) {
-		case BINDER_TYPE_BINDER:
+
+        // BINDER_TYPE_BINDER和BINDER_TYPE_WEAK_BINDER类型的flat_binder_object传输发生在：
+        // Server进程主动向Client进程发送Service (匿名Service )
+		// Server进程向Service Manager进程注册Service
+        case BINDER_TYPE_BINDER:
 		case BINDER_TYPE_WEAK_BINDER: {
 			struct binder_ref *ref;
 			struct binder_node *node = binder_get_node(proc, fp->binder);
 
 			if (node == NULL) {
-			    //服务所在进程 创建binder_node
+			    //当前进程 创建binder_node
 				node = binder_new_node(proc, fp->binder, fp->cookie);
 			}
 			if (fp->cookie != node->cookie) {
 			}
+            // 在目标进程，寻找binder_ref关联当前进程的bind_node
 			ref = binder_get_ref_for_node(target_proc, node);
 			if (fp->type == BINDER_TYPE_BINDER)
 				fp->type = BINDER_TYPE_HANDLE;
@@ -1192,6 +1182,9 @@ static void binder_transaction(struct binder_proc *proc,
 			binder_inc_ref(ref, fp->type == BINDER_TYPE_HANDLE,
 				       &thread->todo);
 		} break;
+
+        // BINDER_TYPE_HANDLE和BINDER_TYPE_WEAK_HANDLE类型的flat_binder_object传输发生在：
+        // 一个Client向另外一个进程发送Service代理
 		case BINDER_TYPE_HANDLE:
 		case BINDER_TYPE_WEAK_HANDLE: {
 			struct binder_ref *ref = binder_get_ref(proc, fp->handle);
@@ -1204,11 +1197,6 @@ static void binder_transaction(struct binder_proc *proc,
 				fp->binder = ref->node->ptr;
 				fp->cookie = ref->node->cookie;
 				binder_inc_node(ref->node, fp->type == BINDER_TYPE_BINDER, 0, NULL);
-				trace_binder_transaction_ref_to_node(t, ref);
-				binder_debug(BINDER_DEBUG_TRANSACTION,
-					     "        ref %d desc %d -> node %d u%016llx\n",
-					     ref->debug_id, ref->desc, ref->node->debug_id,
-					     (u64)ref->node->ptr);
 			} else {
 				struct binder_ref *new_ref;
 				new_ref = binder_get_ref_for_node(target_proc, ref->node);
@@ -1271,4 +1259,216 @@ static struct binder_ref *binder_get_ref(struct binder_proc *proc,
 	return NULL;
 }
 ```
+```
+//24.
+static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+						  struct binder_node *node)
+{
+	struct rb_node *n;
+	struct rb_node **p = &proc->refs_by_node.rb_node;
+	struct rb_node *parent = NULL;
+	struct binder_ref *ref, *new_ref;
 
+    // 尝试从目标进程binder_proc中找到binder_ref
+	while (*p) {
+		parent = *p;
+		ref = rb_entry(parent, struct binder_ref, rb_node_node);
+
+		if (node < ref->node)
+			p = &(*p)->rb_left;
+		else if (node > ref->node)
+			p = &(*p)->rb_right;
+		else
+			return ref;
+	}
+    // 没有找到，则创建对象
+	new_ref = kzalloc(sizeof(*ref), GFP_KERNEL);
+	if (new_ref == NULL)
+		return NULL;
+	binder_stats_created(BINDER_STAT_REF);
+	new_ref->debug_id = ++binder_last_id;
+	new_ref->proc = proc;
+	new_ref->node = node;
+	rb_link_node(&new_ref->rb_node_node, parent, p);
+	rb_insert_color(&new_ref->rb_node_node, &proc->refs_by_node);
+
+    // 生成引用号，如果是serverManager则固定是0
+	new_ref->desc = (node == binder_context_mgr_node) ? 0 : 1;
+	for (n = rb_first(&proc->refs_by_desc); n != NULL; n = rb_next(n)) {
+		ref = rb_entry(n, struct binder_ref, rb_node_desc);
+		if (ref->desc > new_ref->desc)
+			break;
+		new_ref->desc = ref->desc + 1;
+	}
+
+    //找到插入点
+	p = &proc->refs_by_desc.rb_node;
+	while (*p) {
+		parent = *p;
+		ref = rb_entry(parent, struct binder_ref, rb_node_desc);
+
+		if (new_ref->desc < ref->desc)
+			p = &(*p)->rb_left;
+		else if (new_ref->desc > ref->desc)
+			p = &(*p)->rb_right;
+		else
+			BUG();
+	}
+    // 把binder_ref根据desc 插入到目标进程proc的refs_by_desc
+    rb_link_node(&new_ref->rb_node_desc, parent, p);
+	rb_insert_color(&new_ref->rb_node_desc, &proc->refs_by_desc);
+	if (node) {
+		hlist_add_head(&new_ref->node_entry, &node->refs);
+	}
+	return new_ref;
+}
+
+```
+```
+//25
+static int binder_thread_read(struct binder_proc *proc,
+                  struct binder_thread *thread,
+                  void  __user *buffer, int size,
+                  signed long *consumed, int non_block)
+{
+    void __user *ptr = buffer + *consumed;
+    void __user *end = buffer + size;
+
+    int ret = 0;
+    int wait_for_proc_work;
+
+    if (*consumed == 0) {
+        if (put_user(BR_NOOP, (uint32_t __user *)ptr))
+            return -EFAULT;
+        ptr += sizeof(uint32_t);
+    }
+
+retry:
+    wait_for_proc_work = thread->transaction_stack == NULL &&
+                list_empty(&thread->todo);
+    thread->looper |= BINDER_LOOPER_STATE_WAITING;
+    if (wait_for_proc_work)
+        proc->ready_threads++;
+    if (wait_for_proc_work) {
+            ret = wait_event_freezable_exclusive(proc->wait, binder_has_proc_work(proc, thread));
+    } else {
+            ret = wait_event_freezable(thread->wait, binder_has_thread_work(thread));
+    }
+    if (wait_for_proc_work)
+        proc->ready_threads--;
+    thread->looper &= ~BINDER_LOOPER_STATE_WAITING;
+
+    if (ret)
+        return ret;
+
+    while (1) {
+        uint32_t cmd;
+        struct binder_transaction_data tr;
+        struct binder_work *w;
+        struct binder_transaction *t = NULL;
+        // 读取todo列表首节点，这正是在Client端触发的binder_transaction
+        // 在结尾处插进来的t->work.entry
+        if (!list_empty(&thread->todo))
+            w = list_first_entry(&thread->todo, struct binder_work, entry);
+        else if (!list_empty(&proc->todo) && wait_for_proc_work)
+            w = list_first_entry(&proc->todo, struct binder_work, entry);
+        ... ...
+        switch (w->type) {
+        case BINDER_WORK_TRANSACTION: {
+            // 根据binder_work找到他所在的binder_transaction
+            t = container_of(w, struct binder_transaction, work);
+        } break;
+        ... ...
+        //组装一个binder_transaction_data结构体，从发起端的binder_transaction以及binder_buffer中提取数据
+        if (t->buffer->target_node) {
+            struct binder_node *target_node = t->buffer->target_node; // SM
+            tr.target.ptr = target_node->ptr;
+            tr.cookie =  target_node->cookie;
+            t->saved_priority = task_nice(current);
+            if (t->priority < target_node->min_priority &&
+                !(t->flags & TF_ONE_WAY))
+                binder_set_nice(t->priority);
+            else if (!(t->flags & TF_ONE_WAY) ||
+                 t->saved_priority > target_node->min_priority)
+                binder_set_nice(target_node->min_priority);
+            cmd = BR_TRANSACTION;
+        } ... ...
+        tr.code = t->code;//
+        tr.flags = t->flags;
+        tr.sender_euid = t->sender_euid;
+
+        if (t->from) {
+            struct task_struct *sender = t->from->proc->tsk;
+            tr.sender_pid = task_tgid_nr_ns(sender,
+                            current->nsproxy->pid_ns);
+        } else {
+            tr.sender_pid = 0;
+        }
+
+        tr.data_size = t->buffer->data_size;
+        tr.offsets_size = t->buffer->offsets_size;
+        tr.data.ptr.buffer = (void *)t->buffer->data +
+                    proc->user_buffer_offset;
+        tr.data.ptr.offsets = tr.data.ptr.buffer +
+                    ALIGN(t->buffer->data_size,
+                        sizeof(void *));
+
+        if (put_user(cmd, (uint32_t __user *)ptr))
+            return -EFAULT;
+        ptr += sizeof(uint32_t);
+        // 将binder_transaction_data结构体拷贝到用户空间，由AMS接收
+        if (copy_to_user(ptr, &tr, sizeof(tr))) 
+            return -EFAULT;
+        ptr += sizeof(tr);
+        // 执行后删除这次todo
+        list_del(&t->work.entry);
+        t->buffer->allow_user_free = 1;
+    }
+
+    return 0;
+}
+```
+```
+//26.
+//由18 数据被返回到AMS的BBinder,伪代码
+ public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+              throws RemoteException {
+    case PUBLISH_SERVICE_TRANSACTION: {
+        data.enforceInterface(IActivityManager.descriptor);
+        // readStrongBinder将返回BBinder的代理
+        IBinder token = data.readStrongBinder();
+        Intent intent = Intent.CREATOR.createFromParcel(data);
+        IBinder service = data.readStrongBinder();
+        // 这里回到第一大点（1.非当前进程启动service）的第21步，从而使client端最后回调到onServiceConnected
+        // 返回服务端的binder代理
+        publishService(token, intent, service);
+        reply.writeNoException();
+        return true;
+    }
+}
+
+```
+```
+//27.
+//native/libs/binder/Parcel.cpp
+// readStrongBinder 最终调到
+status_t unflatten_binder(const sp<ProcessState>& proc,
+    const Parcel& in, sp<IBinder>* out)
+{
+    const flat_binder_object* flat = in.readObject(false);
+
+    if (flat) {
+        switch (flat->hdr.type) {
+            case BINDER_TYPE_BINDER:
+                *out = reinterpret_cast<IBinder*>(flat->cookie);
+                return finish_unflatten_binder(NULL, *flat, in);
+            case BINDER_TYPE_HANDLE:
+                // 非同一进程，返回BpBinder
+                *out = proc->getStrongProxyForHandle(flat->handle);
+                return finish_unflatten_binder(
+                    static_cast<BpBinder*>(out->get()), *flat, in);
+        }
+    }
+    return BAD_TYPE;
+}
+```
