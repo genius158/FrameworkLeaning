@@ -510,6 +510,7 @@ public boolean transact(int code, Parcel data, Parcel reply, int flags) throws R
 static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,
         jint code, jobject dataObj, jobject replyObj, jint flags) // throws RemoteException
 {
+    // java parcel 转c++
     Parcel* data = parcelForJavaObject(env, dataObj);
     Parcel* reply = parcelForJavaObject(env, replyObj);
 
@@ -534,7 +535,7 @@ static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,
 }
 ```
 ```
-//10
+//10.
 //frameworks/base/core/jni/android_util_Binder.cpp
 BinderProxyNativeData* getBPNativeData(JNIEnv* env, jobject obj) {
     /**
@@ -546,22 +547,9 @@ BinderProxyNativeData* getBPNativeData(JNIEnv* env, jobject obj) {
     return (BinderProxyNativeData *) env->GetLongField(obj, gBinderProxyOffsets.mNativeData);
 }
 ```
-```
-//11
-//frameworks/base/core/jni/android_util_Binder.cpp
-BinderProxyNativeData* getBPNativeData(JNIEnv* env, jobject obj) {
-    /**
-     * C++ pointer to BinderProxyNativeData. That consists of strong pointers to the
-     * native IBinder object, and a DeathRecipientList.
-     */
-    //private final long mNativeData;
-    //gBinderProxyOffsets.mNativeData 对应BinderProxy mNativeData(对应native BinderProxyNativeData指针)
-    return (BinderProxyNativeData *) env->GetLongField(obj, gBinderProxyOffsets.mNativeData);
-}
-```
 
 ```
-//12
+//11.
 ///frameworks/native/libs/binder/BpBinder.cpp
 status_t BpBinder::transact(uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)
 {
@@ -572,7 +560,7 @@ status_t BpBinder::transact(uint32_t code, const Parcel& data, Parcel* reply, ui
 }
 ```
 ```
-//13
+//12.
 //frameworks/native/libs/binder/IPCThreadState.cpp
 IPCThreadState* IPCThreadState::self()
 {
@@ -585,7 +573,7 @@ IPCThreadState* IPCThreadState::self()
 }
 ```
 ```
-//14
+//13.
 //frameworks/native/libs/binder/IPCThreadState.cpp
 status_t IPCThreadState::transact(int32_t handle,
                                   uint32_t code, const Parcel& data,
@@ -610,7 +598,7 @@ status_t IPCThreadState::transact(int32_t handle,
 ```
 
 ```
-//15.
+//14.
 //frameworks/native/libs/binder/IPCThreadState.cpp
 status_t IPCThreadState::writeTransactionData(int32_t cmd, uint32_t binderFlags,
     int32_t handle, uint32_t code, const Parcel& data, status_t* statusBuffer)
@@ -636,7 +624,7 @@ status_t IPCThreadState::writeTransactionData(int32_t cmd, uint32_t binderFlags,
 }
 ```
 ```
-//16.
+//15.
 status_t IPCThreadState::waitForResponse(Parcel *reply, status_t *acquireResult)
 {
     uint32_t cmd;
@@ -713,7 +701,7 @@ finish:
 }
 ```
 ```
-//17.
+//16.
 
 status_t IPCThreadState::talkWithDriver(bool doReceive)
 {
@@ -757,7 +745,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
  
 ```
 ```
-//18.
+//17.
 status_t IPCThreadState::executeCommand(int32_t cmd)
 {
     BBinder* obj;
@@ -815,6 +803,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             result = mIn.read(&tr, sizeof(tr));           
             if (result != NO_ERROR) break;
             Parcel buffer;
+            // 读取数据到 tr
             buffer.ipcSetDataReference(
                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                 tr.data_size,
@@ -835,6 +824,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             if (tr.target.ptr) {
                 if (reinterpret_cast<RefBase::weakref_type*>(
                         tr.target.ptr)->attemptIncStrong(this)) {
+                    // 由BBinder transact 调用到 其子类JavaBBinder::transact 
                     error = reinterpret_cast<BBinder*>(tr.cookie)->transact(tr.code, buffer,
                             &reply, tr.flags);
                     reinterpret_cast<BBinder*>(tr.cookie)->decStrong(this);
@@ -859,45 +849,24 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             mStrictModePolicy = origStrictModePolicy;
             mLastTransactionBinderFlags = origTransactionBinderFlags;   
         }
-        break;
-
-    case BR_DEAD_BINDER:
-        {
-            BpBinder *proxy = (BpBinder*)mIn.readPointer();
-            proxy->sendObituary();
-            mOut.writeInt32(BC_DEAD_BINDER_DONE);
-            mOut.writePointer((uintptr_t)proxy);
-        } break;
-
-    case BR_CLEAR_DEATH_NOTIFICATION_DONE:
-        {
-            BpBinder *proxy = (BpBinder*)mIn.readPointer();
-            proxy->getWeakRefs()->decWeak(proxy);
-        } break;
-
-    case BR_FINISHED:
-        result = TIMED_OUT;
-        break;
-
-    case BR_NOOP:
-        break;
-
-    case BR_SPAWN_LOOPER:
-        mProcess->spawnPooledThread(false);
-        break;
-binder.c
-    default:
-        ALOGE("*** BAD COMMAND %d received from Binder driver\n", cmd);
-        result = UNKNOWN_ERROR;
-        break;
-    }
-
-    if (result != NO_ERROR) {
-        mLastError = result;
-    }
-
+        break;  
     return result;
 }
+```
+```
+//18. 
+//JavaBBinder
+virtual status_t onTransact(
+        uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags = 0)
+    {
+        JNIEnv* env = javavm_to_jnienv(mVM);
+        IPCThreadState* thread_state = IPCThreadState::self();
+        
+        调用java层 binder对象的onTransact
+        jboolean res = env->CallBooleanMethod(mObject, gBinderOffsets.mExecTransact,
+            code, reinterpret_cast<jlong>(&data), reinterpret_cast<jlong>(reply), flags);
+
+    }
 ```
 ```
 //19.
@@ -1326,7 +1295,7 @@ retry:
         ... ...
         //组装一个binder_transaction_data结构体，从发起端的binder_transaction以及binder_buffer中提取数据
         if (t->buffer->target_node) {
-            struct binder_node *target_node = t->buffer->target_node; // SM
+            struct binder_node *target_node = t->buffer->target_node;
             tr.target.ptr = target_node->ptr;
             tr.cookie =  target_node->cookie;
             t->saved_priority = task_nice(current);
