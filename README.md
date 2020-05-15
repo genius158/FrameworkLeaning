@@ -1460,6 +1460,7 @@ status_t unflatten_binder(const sp<ProcessState>& proc,
     if (flat) {
         switch (flat->hdr.type) {
             case BINDER_TYPE_BINDER:
+                //同一进程，从flat中的cookie也就是BBinder的指针返回binder对象
                 *out = reinterpret_cast<IBinder*>(flat->cookie);
                 return finish_unflatten_binder(NULL, *flat, in);
             case BINDER_TYPE_HANDLE:
@@ -1470,5 +1471,31 @@ status_t unflatten_binder(const sp<ProcessState>& proc,
         }
     }
     return BAD_TYPE;
+}
+```
+```
+//28.
+sp<IBinder> ProcessState::getStrongProxyForHandle(int32_t handle)
+{
+    sp<IBinder> result;
+
+    handle_entry* e = lookupHandleLocked(handle);
+    if (e != nullptr) {
+        IBinder* b = e->binder;
+        //新创建的binder 一定为空
+        if (b == nullptr || !e->refs->attemptIncWeak(this)) {
+            //创建一个BpBinder对象
+            b = BpBinder::create(handle);
+            //放入handle_entry，缓存，方便后面查询
+            e->binder = b;
+            if (b) e->refs = b->getWeakRefs();
+            result = b;
+        } else {
+            result.force_set(b);
+            e->refs->decWeak(this);
+        }
+    }
+
+    return result;
 }
 ```
