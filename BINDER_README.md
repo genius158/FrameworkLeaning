@@ -863,7 +863,7 @@ virtual status_t onTransact(
         JNIEnv* env = javavm_to_jnienv(mVM);
         IPCThreadState* thread_state = IPCThreadState::self();
         
-        调用java层 binder对象的onTransact
+        调用java层 binder对象的ExecTransact 进而调用子类的onTransact
         jboolean res = env->CallBooleanMethod(mObject, gBinderOffsets.mExecTransact,
             code, reinterpret_cast<jlong>(&data), reinterpret_cast<jlong>(reply), flags);
 
