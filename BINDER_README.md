@@ -800,10 +800,11 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
     case BR_TRANSACTION: 
         {
             binder_transaction_data tr;
+            // 读取数据到 tr
             result = mIn.read(&tr, sizeof(tr));           
             if (result != NO_ERROR) break;
             Parcel buffer;
-            // 读取数据到 tr
+            //绑定释放
             buffer.ipcSetDataReference(
                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                 tr.data_size,
